@@ -44,42 +44,27 @@ export const SOURCE_DISPLAY_NAMES: Record<string, string> = {
   synthetic: "Synthetic",
 };
 
-const SOURCE_LOGO_FILES: Record<string, string> = {
-  opencode: "opencode.png",
-  claude: "claude.jpg",
-  codex: "openai.jpg",
-  gemini: "gemini.png",
-  cursor: "cursor.jpg",
-  amp: "amp.png",
-  droid: "droid.png",
-  openclaw: "openclaw.jpg",
-  hermes: "hermes.png",
-  pi: "pi.png",
-  kimi: "kimi.png",
-  qwen: "qwen.png",
-  roocode: "roocode.png",
-  kilocode: "kilocode.png",
-  kilo: "kilocode.png",
-  mux: "mux.png",
-  synthetic: "synthetic.png",
-};
-
 // Client logos from GitHub CDN (public repo)
 const GITHUB_CDN_BASE = "https://raw.githubusercontent.com/junhoyeo/tokscale/main/.github/assets";
-export const SOURCE_LOGOS: Record<string, string> = Object.fromEntries(
-  Object.entries(SOURCE_LOGO_FILES).map(([client, fileName]) => [
-    client,
-    `${GITHUB_CDN_BASE}/client-${fileName}`,
-  ]),
-);
-
-// Client logos served by the local frontend public assets
-export const LOCAL_SOURCE_LOGOS: Record<string, string> = Object.fromEntries(
-  Object.entries(SOURCE_LOGO_FILES).map(([client, fileName]) => [
-    client,
-    `/assets/logos/${fileName}`,
-  ]),
-);
+export const SOURCE_LOGOS: Record<string, string> = {
+  opencode: `${GITHUB_CDN_BASE}/client-opencode.png`,
+  claude: `${GITHUB_CDN_BASE}/client-claude.jpg`,
+  codex: `${GITHUB_CDN_BASE}/client-openai.jpg`,
+  gemini: `${GITHUB_CDN_BASE}/client-gemini.png`,
+  cursor: `${GITHUB_CDN_BASE}/client-cursor.jpg`,
+  amp: `${GITHUB_CDN_BASE}/client-amp.png`,
+  droid: `${GITHUB_CDN_BASE}/client-droid.png`,
+  openclaw: `${GITHUB_CDN_BASE}/client-openclaw.jpg`,
+  hermes: `${GITHUB_CDN_BASE}/client-hermes.png`,
+  pi: `${GITHUB_CDN_BASE}/client-pi.png`,
+  kimi: `${GITHUB_CDN_BASE}/client-kimi.png`,
+  qwen: `${GITHUB_CDN_BASE}/client-qwen.png`,
+  roocode: `${GITHUB_CDN_BASE}/client-roocode.png`,
+  kilocode: `${GITHUB_CDN_BASE}/client-kilocode.png`,
+  kilo: `${GITHUB_CDN_BASE}/client-kilocode.png`,
+  mux: `${GITHUB_CDN_BASE}/client-mux.png`,
+  synthetic: `${GITHUB_CDN_BASE}/client-synthetic.png`,
+};
 
 export const SOURCE_COLORS: Record<string, string> = {
   opencode: "#00A8E8",
