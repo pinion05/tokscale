@@ -3633,6 +3633,56 @@ fn run_submit_command(
                     println!();
                 }
             }
+
+            // Fetch and display the user's rank from the leaderboard
+            {
+                let rank_url = format!(
+                    "{}/api/leaderboard/user/{}?period=all&sortBy=tokens",
+                    api_url, credentials.username
+                );
+                match rt.block_on(async {
+                    reqwest::Client::new()
+                        .get(&rank_url)
+                        .send()
+                        .await
+                }) {
+                    Ok(rank_resp) if rank_resp.status().is_success() => {
+                        if let Ok(rank_body) = rt.block_on(async { rank_resp.json::<serde_json::Value>().await }) {
+                            if let (Some(rank), Some(tokens)) = (
+                                rank_body.get("rank").and_then(|v| v.as_i64()),
+                                rank_body.get("totalTokens").and_then(|v| v.as_f64()),
+                            ) {
+                                let tokens_i = tokens as i64;
+                                let cost = rank_body.get("totalCost").and_then(|v| v.as_f64());
+                                if let Some(cost_val) = cost {
+                                    println!(
+                                        "{}",
+                                        format!(
+                                            "  \u{1F3C5} Your rank: #{} ({}, ${:.2})",
+                                            rank,
+                                            format_tokens_with_commas(tokens_i),
+                                            cost_val
+                                        )
+                                        .bright_black()
+                                    );
+                                } else {
+                                    println!(
+                                        "{}",
+                                        format!(
+                                            "  \u{1F3C5} Your rank: #{} ({})",
+                                            rank,
+                                            format_tokens_with_commas(tokens_i)
+                                        )
+                                        .bright_black()
+                                    );
+                                }
+                                println!();
+                            }
+                        }
+                    }
+                    _ => {} // Silently skip on network error, 404, etc.
+                }
+            }
         }
         Err(err) => {
             eprintln!("\n  {}", "Error: Failed to connect to server.".red());
