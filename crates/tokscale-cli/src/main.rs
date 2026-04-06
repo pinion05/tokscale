@@ -525,6 +525,21 @@ enum Commands {
         #[command(subcommand)]
         subcommand: CursorSubcommand,
     },
+    #[command(about = "Show Tokscale global leaderboard")]
+    Leaderboard {
+        #[arg(long, help = "Sort by cost instead of tokens")]
+        cost: bool,
+        #[arg(long, help = "Time period: all, month, week", default_value = "all")]
+        period: String,
+        #[arg(long, default_value = "20", help = "Number of users to show")]
+        limit: u32,
+        #[arg(long, default_value = "1", help = "Page number")]
+        page: u32,
+        #[arg(long, help = "Search by username")]
+        search: Option<String>,
+        #[arg(long, help = "Output as JSON")]
+        json: bool,
+    },
     #[command(about = "Delete all submitted usage data from the server")]
     DeleteSubmittedData,
 }
@@ -1011,6 +1026,16 @@ fn main() -> Result<()> {
         Some(Commands::Cursor { subcommand }) => {
             reject_unsupported_home_override(&cli.home, "cursor")?;
             run_cursor_command(subcommand)
+        }
+        Some(Commands::Leaderboard {
+            cost,
+            period,
+            limit,
+            page,
+            search,
+            json,
+        }) => {
+            run_leaderboard_command(cost, &period, limit, page, search.as_ref(), json)
         }
         Some(Commands::DeleteSubmittedData) => {
             reject_unsupported_home_override(&cli.home, "delete-submitted-data")?;
@@ -3067,6 +3092,171 @@ fn run_delete_data_command() -> Result<()> {
 enum DeleteSubmittedDataOutcome {
     Deleted(i64),
     NotFound,
+}
+
+fn run_leaderboard_command(
+    cost: bool,
+    period: &str,
+    limit: u32,
+    page: u32,
+    search: Option<&String>,
+    json: bool,
+) -> Result<()> {
+    use colored::Colorize;
+    use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
+    use tokio::runtime::Runtime;
+
+    let rt = Runtime::new()?;
+    let api_url = auth::get_api_base_url();
+    let sort_by = if cost { "cost" } else { "tokens" };
+    let search_query = search.map(|s| s.as_str()).unwrap_or("");
+
+    let url = format!(
+        "{}/api/leaderboard?period={}&sortBy={}&page={}&limit={}&search={}",
+        api_url, period, sort_by, page, limit, search_query
+    );
+
+    let response = rt.block_on(async {
+        reqwest::Client::new().get(&url).send().await
+    })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = rt.block_on(async { response.text().await }).unwrap_or_default();
+        return Err(anyhow::anyhow!("API request failed ({}): {}", status, body));
+    }
+
+    let body: serde_json::Value = rt.block_on(async { response.json().await })?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+
+    let users = body["users"].as_array().cloned().unwrap_or_default();
+    let pagination = &body["pagination"];
+    let current_page = pagination["page"].as_u64().unwrap_or(page as u64) as u64;
+    let total_pages = pagination["totalPages"].as_u64().unwrap_or(1) as u64;
+    let total_users = pagination["totalUsers"].as_u64().unwrap_or(0) as u64;
+
+    let period_label = match period {
+        "month" => "Monthly",
+        "week" => "Weekly",
+        _ => "All Time",
+    };
+    let sort_label = if cost { "Cost" } else { "Tokens" };
+
+    println!(
+        "
+  {}",
+        format!("Tokscale - Global Leaderboard ({}, by {})", period_label, sort_label)
+            .cyan()
+            .bold()
+    );
+    println!();
+
+    if users.is_empty() {
+        println!("  {}", "No users found.".bright_black());
+        return Ok(());
+    }
+
+    let mut table = Table::new();
+    table.load_preset(TABLE_PRESET);
+    let arrangement = if std::io::stdout().is_terminal() {
+        ContentArrangement::DynamicFullWidth
+    } else {
+        ContentArrangement::Dynamic
+    };
+    table.set_content_arrangement(arrangement);
+    table.enforce_styling();
+
+    if cost {
+        table.set_header(vec![
+            Cell::new("#").fg(Color::Cyan),
+            Cell::new("Username").fg(Color::Cyan),
+            Cell::new("Cost").fg(Color::Cyan),
+            Cell::new("Tokens").fg(Color::Cyan),
+            Cell::new("Submissions").fg(Color::Cyan),
+        ]);
+    } else {
+        table.set_header(vec![
+            Cell::new("#").fg(Color::Cyan),
+            Cell::new("Username").fg(Color::Cyan),
+            Cell::new("Tokens").fg(Color::Cyan),
+            Cell::new("Cost").fg(Color::Cyan),
+            Cell::new("Submissions").fg(Color::Cyan),
+        ]);
+    }
+
+    for user in &users {
+        let rank = user["rank"].as_u64().unwrap_or(0);
+        let username = user["username"].as_str().unwrap_or("unknown");
+        let total_tokens = user["totalTokens"].as_u64().unwrap_or(0);
+        let total_cost = user["totalCost"].as_f64().unwrap_or(0.0);
+        let submission_count = user["submissionCount"].as_u64().unwrap_or(0);
+
+        let formatted_tokens = format_comma_separated(total_tokens);
+        let formatted_cost = format_cost(total_cost);
+
+        if cost {
+            table.add_row(vec![
+                Cell::new(rank),
+                Cell::new(username),
+                Cell::new(formatted_cost).add_attribute(Attribute::Bold),
+                Cell::new(formatted_tokens),
+                Cell::new(submission_count),
+            ]);
+        } else {
+            table.add_row(vec![
+                Cell::new(rank),
+                Cell::new(username),
+                Cell::new(formatted_tokens).add_attribute(Attribute::Bold),
+                Cell::new(formatted_cost),
+                Cell::new(submission_count),
+            ]);
+        }
+    }
+
+    println!("  {}", table);
+
+    if total_pages > 1 {
+        println!(
+            "  {}",
+            format!(
+                "Page {} of {} — {} total users",
+                current_page, total_pages, total_users
+            )
+            .bright_black()
+        );
+    } else {
+        println!(
+            "  {}",
+            format!("{} total users", total_users).bright_black()
+        );
+    }
+    println!();
+
+    Ok(())
+}
+
+fn format_comma_separated(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
+fn format_cost(n: f64) -> String {
+    let abs = n.abs();
+    let sign = if n < 0.0 { "-" } else { "" };
+    let whole = abs as u64;
+    let frac = ((abs - whole as f64) * 100.0).round() as u64;
+    format!("{}{},.{:02}", sign, format_comma_separated(whole), frac)
 }
 
 fn interpret_delete_submitted_data_response(
