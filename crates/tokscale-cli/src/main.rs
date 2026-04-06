@@ -282,6 +282,15 @@ enum Commands {
     Login,
     #[command(about = "Logout from Tokscale")]
     Logout,
+    #[command(about = "Show your Tokscale leaderboard rank")]
+    Rank {
+        #[arg(long, help = "Sort by cost instead of tokens")]
+        cost: bool,
+        #[arg(long, help = "Time period: all, month, week", default_value = "all")]
+        period: String,
+        #[arg(long, help = "Output as JSON")]
+        json: bool,
+    },
     #[command(about = "Show current logged in user")]
     Whoami,
     #[command(about = "Export contribution graph data as JSON")]
@@ -761,6 +770,10 @@ fn main() -> Result<()> {
         Some(Commands::Logout) => {
             reject_unsupported_home_override(&cli.home, "logout")?;
             run_logout_command()
+        }
+        Some(Commands::Rank { cost, period, json }) => {
+            reject_unsupported_home_override(&cli.home, "rank")?;
+            run_rank_command(cost, &period, json)
         }
         Some(Commands::Whoami) => {
             reject_unsupported_home_override(&cli.home, "whoami")?;
@@ -3861,6 +3874,107 @@ fn run_headless_command(
     }
 
     Ok(())
+}
+
+fn run_rank_command(cost: bool, period: &str, json: bool) -> Result<()> {
+    use colored::Colorize;
+    use tokio::runtime::Runtime;
+
+    let credentials = auth::load_credentials()
+        .ok_or_else(|| anyhow::anyhow!("Not logged in. Run `tokscale login` first."))?;
+
+    let api_url = auth::get_api_base_url();
+    let sort_by = if cost { "cost" } else { "tokens" };
+    let url = format!(
+        "{}/api/leaderboard/user/{}?period={}&sortBy={}",
+        api_url, credentials.username, period, sort_by
+    );
+
+    let rt = Runtime::new()?;
+
+    let response = rt.block_on(async {
+        reqwest::Client::new().get(&url).send().await
+    })?;
+
+    match response.error_for_status_ref() {
+        Ok(_) => {}
+        Err(_) => {
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                anyhow::bail!("User '{}' not found on the leaderboard.", credentials.username);
+            }
+            anyhow::bail!("API request failed with status: {}", status);
+        }
+    }
+
+    let body: serde_json::Value = rt.block_on(async { response.json().await })?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+
+    let rank = body["rank"].as_u64().unwrap_or(0);
+    let username = body["username"].as_str().unwrap_or("unknown");
+    let total_tokens = body["totalTokens"].as_u64().unwrap_or(0);
+    let total_cost = body["totalCost"].as_f64().unwrap_or(0.0);
+    let submission_count = body["submissionCount"].as_u64().unwrap_or(0);
+    let last_submission = body["lastSubmission"].as_str().unwrap_or("");
+
+    let tokens_formatted = format_number_with_commas(total_tokens);
+    let cost_formatted = format_cost(total_cost);
+    let last_sub_formatted = if !last_submission.is_empty() {
+        last_submission.split('T').next().unwrap_or(last_submission).to_string()
+    } else {
+        "N/A".to_string()
+    };
+
+    println!();
+    println!("{}", "  Tokscale - Your Rank".bright_cyan().bold());
+    println!();
+    println!("  {:<14}{}", "Rank:", format!("#{}", rank).bright_white().bold());
+    println!("  {:<14}{}", "Username:", username.bright_white());
+    println!("  {:<14}{}", "Tokens:", tokens_formatted.bright_white());
+    println!("  {:<14}{}", "Cost:", cost_formatted.bright_white());
+    println!("  {:<14}{}", "Submissions:", submission_count.to_string().bright_white());
+    println!("  {:<14}{}", "Last Submit:", last_sub_formatted.bright_white());
+    println!();
+
+    Ok(())
+}
+
+fn format_number_with_commas(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(*c);
+    }
+    result
+}
+
+fn format_cost(cost: f64) -> String {
+    let formatted = format!("{:.2}", cost);
+    let parts: Vec<&str> = formatted.split('.').collect();
+    let int_part = parts[0].replace("-", "");
+    let sign = if formatted.starts_with('-') { "-" } else { "" };
+    let commas = add_commas_to_str(&int_part);
+    format!("${}{}.{}", sign, commas, parts[1])
+}
+
+fn add_commas_to_str(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::new();
+    for (i, c) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(*c);
+    }
+    result
 }
 
 #[cfg(test)]
