@@ -1,4 +1,5 @@
 mod agents;
+mod leaderboard;
 mod bar_chart;
 mod daily;
 pub mod dialog;
@@ -35,7 +36,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     header::render(frame, app, chunks[0]);
 
-    if app.data.loading && !app.background_loading {
+    // Leaderboard tab has its own loading/error handling
+    if app.current_tab == Tab::Leaderboard {
+        leaderboard::render(frame, app, chunks[1]);
+    } else if app.data.loading && !app.background_loading {
         render_loading(frame, app, chunks[1]);
     } else if let Some(ref error) = app.data.error {
         render_error(frame, app, chunks[1], error);
@@ -46,6 +50,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Tab::Agents => agents::render(frame, app, chunks[1]),
             Tab::Daily => daily::render(frame, app, chunks[1]),
             Tab::Stats => stats::render(frame, app, chunks[1]),
+            Tab::Leaderboard => leaderboard::render(frame, app, chunks[1]),
         }
     }
 

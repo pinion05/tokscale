@@ -32,6 +32,7 @@ pub enum Tab {
     Daily,
     Stats,
     Agents,
+    Leaderboard,
 }
 
 impl Tab {
@@ -42,6 +43,7 @@ impl Tab {
             Tab::Daily,
             Tab::Stats,
             Tab::Agents,
+            Tab::Leaderboard,
         ]
     }
 
@@ -52,6 +54,7 @@ impl Tab {
             Tab::Daily => "Daily",
             Tab::Stats => "Stats",
             Tab::Agents => "Agents",
+            Tab::Leaderboard => "Leaderboard",
         }
     }
 
@@ -62,6 +65,7 @@ impl Tab {
             Tab::Daily => "Day",
             Tab::Stats => "Sta",
             Tab::Agents => "Agt",
+            Tab::Leaderboard => "Lbd",
         }
     }
 
@@ -71,17 +75,19 @@ impl Tab {
             Tab::Models => Tab::Daily,
             Tab::Daily => Tab::Stats,
             Tab::Stats => Tab::Agents,
-            Tab::Agents => Tab::Overview,
+            Tab::Agents => Tab::Leaderboard,
+            Tab::Leaderboard => Tab::Overview,
         }
     }
 
     pub fn prev(self) -> Tab {
         match self {
-            Tab::Overview => Tab::Agents,
+            Tab::Overview => Tab::Leaderboard,
             Tab::Models => Tab::Overview,
             Tab::Daily => Tab::Models,
             Tab::Stats => Tab::Daily,
             Tab::Agents => Tab::Stats,
+            Tab::Leaderboard => Tab::Agents,
         }
     }
 }
@@ -153,6 +159,10 @@ pub struct App {
     pub dialog_stack: DialogStack,
 
     pub dialog_needs_reload: Rc<RefCell<bool>>,
+
+    pub leaderboard_data: RefCell<Option<serde_json::Value>>,
+    pub leaderboard_loading: RefCell<bool>,
+    pub leaderboard_scroll: RefCell<usize>,
 }
 
 impl App {
@@ -237,7 +247,66 @@ impl App {
             needs_reload: false,
             dialog_stack,
             dialog_needs_reload,
+            leaderboard_data: RefCell::new(None),
+            leaderboard_loading: RefCell::new(false),
+            leaderboard_scroll: RefCell::new(0),
         })
+    }
+
+    pub fn fetch_leaderboard(&self) {
+        *self.leaderboard_loading.borrow_mut() = true;
+        let base_url = crate::auth::get_api_base_url();
+        let data = self.leaderboard_data.clone();
+        let loading = self.leaderboard_loading.clone();
+
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(_) => {
+                    *loading.borrow_mut() = false;
+                    return;
+                }
+            };
+
+            let url = format!(
+                "{}/api/leaderboard?period=all&sortBy=tokens&page=1&limit=50",
+                base_url
+            );
+
+            let result = rt.block_on(async {
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(15))
+                    .no_proxy()
+                    .build()
+                    .ok()?;
+
+                let resp = client.get(&url).send().await.ok()?;
+                resp.json::<serde_json::Value>().await.ok()
+            });
+
+            match result {
+                Some(json) => {
+                    *data.borrow_mut() = Some(json);
+                }
+                None => {
+                    let mut error_obj = serde_json::Map::new();
+                    error_obj.insert(
+                        "error".to_string(),
+                        serde_json::Value::String("Failed to fetch leaderboard".to_string()),
+                    );
+                    *data.borrow_mut() = Some(serde_json::Value::Object(error_obj));
+                }
+            }
+
+            *loading.borrow_mut() = false;
+        });
+    }
+
+    /// Check if leaderboard data needs to be fetched and trigger fetch if so.
+    pub fn maybe_fetch_leaderboard(&self) {
+        if !*self.leaderboard_loading.borrow() && self.leaderboard_data.borrow().is_none() {
+            self.fetch_leaderboard();
+        }
     }
 
     pub fn set_background_loading(&mut self, loading: bool) {
@@ -306,18 +375,22 @@ impl App {
             KeyCode::Tab => {
                 self.current_tab = self.current_tab.next();
                 self.reset_selection();
+                self.maybe_fetch_leaderboard();
             }
             KeyCode::BackTab => {
                 self.current_tab = self.current_tab.prev();
                 self.reset_selection();
+                self.maybe_fetch_leaderboard();
             }
             KeyCode::Left => {
                 self.current_tab = self.current_tab.prev();
                 self.reset_selection();
+                self.maybe_fetch_leaderboard();
             }
             KeyCode::Right => {
                 self.current_tab = self.current_tab.next();
                 self.reset_selection();
+                self.maybe_fetch_leaderboard();
             }
             KeyCode::Up => {
                 self.move_selection_up();
@@ -353,7 +426,14 @@ impl App {
                 self.cycle_theme();
             }
             KeyCode::Char('r') => {
-                if self.background_loading {
+                if self.current_tab == Tab::Leaderboard {
+                    if *self.leaderboard_loading.borrow() {
+                        self.set_status("Leaderboard refresh already in progress");
+                    } else {
+                        self.fetch_leaderboard();
+                        self.set_status("Refreshing leaderboard...");
+                    }
+                } else if self.background_loading {
                     self.set_status("Refresh already in progress");
                 } else {
                     self.needs_reload = true;
@@ -419,6 +499,7 @@ impl App {
                             ClickAction::Tab(tab) => {
                                 self.current_tab = *tab;
                                 self.reset_selection();
+                                self.maybe_fetch_leaderboard();
                             }
                             ClickAction::Sort(field) => {
                                 self.set_sort(*field);
@@ -483,9 +564,26 @@ impl App {
         self.selected_index = 0;
         self.selected_graph_cell = None;
         self.stats_breakdown_total_lines = 0;
+        *self.leaderboard_scroll.borrow_mut() = 0;
     }
 
     fn move_selection_up(&mut self) {
+        if self.current_tab == Tab::Leaderboard {
+            // Use the standard mechanism via scroll_offset/selected_index
+            let len = self.get_current_list_len();
+            if len == 0 { return; }
+            if self.selected_index == 0 {
+                self.selected_index = len - 1;
+                self.scroll_offset = len.saturating_sub(self.max_visible_items);
+            } else {
+                self.selected_index -= 1;
+                if self.selected_index < self.scroll_offset {
+                    self.scroll_offset = self.selected_index;
+                }
+            }
+            *self.leaderboard_scroll.borrow_mut() = self.scroll_offset;
+            return;
+        }
         if self.current_tab == Tab::Stats && self.selected_graph_cell.is_some() {
             let len = self.get_current_list_len();
             if len == 0 {
@@ -517,6 +615,22 @@ impl App {
     }
 
     fn move_selection_down(&mut self) {
+        if self.current_tab == Tab::Leaderboard {
+            let len = self.get_current_list_len();
+            if len == 0 { return; }
+            let max_index = len - 1;
+            if self.selected_index >= max_index {
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+            } else {
+                self.selected_index += 1;
+                if self.selected_index >= self.scroll_offset + self.max_visible_items {
+                    self.scroll_offset = self.selected_index - self.max_visible_items + 1;
+                }
+            }
+            *self.leaderboard_scroll.borrow_mut() = self.scroll_offset;
+            return;
+        }
         if self.current_tab == Tab::Stats && self.selected_graph_cell.is_some() {
             let len = self.get_current_list_len();
             if len == 0 {
@@ -603,6 +717,15 @@ impl App {
                 } else {
                     0
                 }
+            }
+            Tab::Leaderboard => {
+                self.leaderboard_data
+                    .borrow()
+                    .as_ref()
+                    .and_then(|d| d.get("users"))
+                    .and_then(|u| u.as_array())
+                    .map(|u| u.len())
+                    .unwrap_or(0)
             }
         }
     }
@@ -751,6 +874,7 @@ impl App {
                 .get(self.selected_index)
                 .map(|d| format!("{}: {} tokens, ${:.4}", d.date, d.tokens.total(), d.cost)),
             Tab::Stats => None,
+            Tab::Leaderboard => None,
         };
 
         if let Some(text) = text {
@@ -957,12 +1081,13 @@ mod tests {
     #[test]
     fn test_tab_all() {
         let tabs = Tab::all();
-        assert_eq!(tabs.len(), 5);
+        assert_eq!(tabs.len(), 6);
         assert_eq!(tabs[0], Tab::Overview);
         assert_eq!(tabs[1], Tab::Models);
         assert_eq!(tabs[2], Tab::Daily);
         assert_eq!(tabs[3], Tab::Stats);
         assert_eq!(tabs[4], Tab::Agents);
+        assert_eq!(tabs[5], Tab::Leaderboard);
     }
 
     #[test]
@@ -971,16 +1096,18 @@ mod tests {
         assert_eq!(Tab::Models.next(), Tab::Daily);
         assert_eq!(Tab::Daily.next(), Tab::Stats);
         assert_eq!(Tab::Stats.next(), Tab::Agents);
-        assert_eq!(Tab::Agents.next(), Tab::Overview);
+        assert_eq!(Tab::Agents.next(), Tab::Leaderboard);
+        assert_eq!(Tab::Leaderboard.next(), Tab::Overview);
     }
 
     #[test]
     fn test_tab_prev() {
-        assert_eq!(Tab::Overview.prev(), Tab::Agents);
+        assert_eq!(Tab::Overview.prev(), Tab::Leaderboard);
         assert_eq!(Tab::Models.prev(), Tab::Overview);
         assert_eq!(Tab::Daily.prev(), Tab::Models);
         assert_eq!(Tab::Stats.prev(), Tab::Daily);
         assert_eq!(Tab::Agents.prev(), Tab::Stats);
+        assert_eq!(Tab::Leaderboard.prev(), Tab::Agents);
     }
 
     #[test]
@@ -1289,6 +1416,9 @@ mod tests {
         assert_eq!(app.current_tab, Tab::Agents);
 
         app.handle_key_event(key(KeyCode::Tab));
+        assert_eq!(app.current_tab, Tab::Leaderboard);
+
+        app.handle_key_event(key(KeyCode::Tab));
         assert_eq!(app.current_tab, Tab::Overview);
     }
 
@@ -1296,6 +1426,9 @@ mod tests {
     fn test_handle_key_backtab_switch() {
         let mut app = make_app();
         assert_eq!(app.current_tab, Tab::Overview);
+
+        app.handle_key_event(key(KeyCode::BackTab));
+        assert_eq!(app.current_tab, Tab::Leaderboard);
 
         app.handle_key_event(key(KeyCode::BackTab));
         assert_eq!(app.current_tab, Tab::Agents);
