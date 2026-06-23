@@ -140,7 +140,7 @@ pub const CLIENT_UI: [ClientUi; ClientId::COUNT] = [
     },
     ClientUi {
         display_name: "ZCode",
-        hotkey: 'z',
+        hotkey: 'q',
     },
 ];
 
